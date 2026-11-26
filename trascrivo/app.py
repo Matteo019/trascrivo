@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.errors import UniqueViolation
 from psycopg_pool import ConnectionPool
@@ -182,20 +182,19 @@ def crea_app(cfg: Config, pool: ConnectionPool) -> FastAPI:
         job = repo.elimina_job(pool, utente, job_id)
         if job is None:
             raise HTTPException(404, NON_TROVATO)
-        elimina_audio(cfg, job["id"])
-        file_job(cfg, job["id"])["testo"].unlink(missing_ok=True)
+        elimina_audio(cfg, job["id"])          # testo e segmenti spariscono con la riga del database
         log.info("job %s: eliminato", job["id"])
         return {"ok": True}
 
     @app.get("/api/job/{job_id}/testo")
     def scarica(job_id: str, utente: dict = Depends(utente_corrente)):
         job = repo.job_con_testo(pool, utente, job_id)
-        percorso = file_job(cfg, job["id"])["testo"] if job else None
-        if percorso is None or not percorso.exists():
+        if job is None:
             raise HTTPException(404, NON_TROVATO)
         nome = f"trascrizione_{dt.date.today():%Y%m%d}_{str(job['id'])[:8]}.txt"
-        return FileResponse(percorso, media_type="text/plain; charset=utf-8", filename=nome,
-                            headers={"Cache-Control": "no-store"})
+        return Response(job["testo"], media_type="text/plain; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{nome}"',
+                                 "Cache-Control": "no-store"})
 
     # --- varie --------------------------------------------------------------
 

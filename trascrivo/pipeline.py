@@ -2,8 +2,8 @@
 Trascrizione di un file audio con checkpoint.
 
 Il file intero passa a faster-whisper con il VAD attivo (salta i silenzi). I segmenti vengono scritti
-man mano in un file di lavoro (inizio, fine, testo); il punto raggiunto si salva nel database, così un job
-interrotto (riavvio, crash, errore) riparte da lì e non dall'inizio. Questo sostituisce la cartella
+man mano nel database insieme al punto raggiunto, così un job interrotto (riavvio, crash, errore)
+riparte da lì e non dall'inizio. Questo sostituisce la cartella
 da_ritrascrivere/ dell'app desktop: stesso scopo, non perdere il lavoro già fatto.
 """
 
@@ -11,7 +11,6 @@ import logging
 import re
 import time
 from collections.abc import Callable, Iterator
-from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -90,44 +89,33 @@ class Annullato(Exception):
     pass
 
 
-def _leggi_parziale(file_lavoro: Path, fino_a: float) -> list[tuple[float, float, str]]:
-    """Segmenti già salvati fino al checkpoint; quelli dopo (scritti ma non confermati) si scartano."""
-    righe = []
-    if file_lavoro.exists():
-        for riga in file_lavoro.read_text(encoding="utf-8").splitlines():
-            parti = riga.split("\t", 2)
-            if len(parti) == 3 and float(parti[1]) <= fino_a + 1e-6:
-                righe.append((float(parti[0]), float(parti[1]), parti[2]))
-    return righe
+Segmento = tuple[float, float, str]
 
 
-def trascrivi(motore: Motore, audio: np.ndarray, lingua: str, glossario: str, file_lavoro: Path,
-              da_secondi: float, salva_punto: Callable[[float], bool]) -> list[tuple[float, float, str]]:
+def trascrivi(motore: Motore, audio: np.ndarray, lingua: str, glossario: str, gia_fatti: list[Segmento],
+              da_secondi: float, salva: Callable[[list[Segmento], float], bool]) -> list[Segmento]:
     """
-    Trascrive da `da_secondi` in poi, aggiungendo i segmenti a `file_lavoro`.
-    `salva_punto(secondi)` registra il checkpoint e restituisce False se il job è stato annullato.
-    Restituisce tutti i segmenti (anche quelli delle esecuzioni precedenti).
+    Trascrive da `da_secondi` in poi. `gia_fatti` sono i segmenti confermati delle esecuzioni precedenti.
+    Ogni CHECKPOINT_OGNI_S chiama `salva(nuovi_segmenti, punto)`, che li registra insieme al punto raggiunto
+    (in una sola transazione) e restituisce False se il job è stato annullato.
+    Restituisce tutti i segmenti; quelli dopo l'ultimo checkpoint li salva chi chiama, con il testo finale.
     """
-    segmenti = _leggi_parziale(file_lavoro, da_secondi)
-    # si riscrive il file senza le righe oltre il checkpoint
-    file_lavoro.write_text("".join(f"{a}\t{b}\t{t}\n" for a, b, t in segmenti), encoding="utf-8")
+    segmenti = list(gia_fatti)
+    da_salvare: list[Segmento] = []
     inizio_campione = int(da_secondi * FREQUENZA)
     ultimo_salvataggio = time.monotonic()
     precedente = segmenti[-1][2] if segmenti else ""
-    with open(file_lavoro, "a", encoding="utf-8") as f:
-        for a, b, testo in motore.segmenti(audio[inizio_campione:], None if lingua == "auto" else lingua,
-                                            glossario):
-            a, b = a + da_secondi, b + da_secondi
-            if testo and not inventato(testo) and testo != precedente:   # niente cicli di frasi uguali
-                testo = testo.replace("\t", " ").replace("\n", " ")
-                f.write(f"{a:.2f}\t{b:.2f}\t{testo}\n")
-                f.flush()
-                segmenti.append((a, b, testo))
-                precedente = testo
-            if time.monotonic() - ultimo_salvataggio >= CHECKPOINT_OGNI_S:
-                if not salva_punto(b):
-                    raise Annullato()
-                ultimo_salvataggio = time.monotonic()
+    for a, b, testo in motore.segmenti(audio[inizio_campione:], None if lingua == "auto" else lingua, glossario):
+        a, b = a + da_secondi, b + da_secondi
+        if testo and not inventato(testo) and testo != precedente:   # niente cicli di frasi uguali
+            segmenti.append((a, b, testo))
+            da_salvare.append((a, b, testo))
+            precedente = testo
+        if time.monotonic() - ultimo_salvataggio >= CHECKPOINT_OGNI_S:
+            if not salva(da_salvare, b):
+                raise Annullato()
+            da_salvare = []
+            ultimo_salvataggio = time.monotonic()
     return segmenti
 
 
@@ -136,7 +124,7 @@ def _ora(secondi: float) -> str:
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
 
-def formatta(segmenti: list[tuple[float, float, str]]) -> str:
+def formatta(segmenti: list[Segmento]) -> str:
     """Testo finale: paragrafi separati dalle pause, ognuno con l'ora d'inizio."""
     paragrafi: list[tuple[float, list[str]]] = []
     fine_prec = None

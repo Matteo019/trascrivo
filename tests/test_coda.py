@@ -50,7 +50,8 @@ def test_worker_completa_e_cancella_audio(utenti, worker, cfg):
     dati = utenti["anna"].get(f"/api/job/{job}").json()
     assert dati["stato"] == "completato" and dati["testo_scade_il"]
     f = file_job(cfg, job)
-    assert not f["originale"].exists() and not f["wav"].exists() and not f["parziale"].exists()
+    assert not f["originale"].exists() and not f["wav"].exists()
+    assert list(cfg.cartella_dati.rglob("*.*")) == []         # su disco non resta niente: il testo è nel DB
     testo = utenti["anna"].get(f"/api/job/{job}/testo")
     assert testo.status_code == 200 and "frase segreta numero 5" in testo.text
     assert "attachment" in testo.headers["content-disposition"]
@@ -62,9 +63,8 @@ def test_riavvio_con_job_in_elaborazione_riprende_dal_checkpoint(utenti, worker,
     f = file_job(cfg, job)
     f["wav"].write_bytes(b"wav")                   # ...lo converte...
     # ...e muore dopo aver confermato 25 s; un segmento oltre il checkpoint è scritto ma non confermato
-    f["parziale"].write_text("0.00\t9.00\tprima\n10.00\t19.00\tseconda\n20.00\t29.00\tnon confermata\n",
-                             encoding="utf-8")
-    repo.aggiorna_avanzamento(pool, preso["id"], 25.0)
+    # ...e muore dopo aver confermato 25 s di lavoro (segmenti e punto salvati insieme nel database)
+    assert repo.salva_checkpoint(pool, preso["id"], [(0.0, 9.0, "prima"), (10.0, 19.0, "seconda")], 25.0)
 
     worker.avvio()                                 # riavvio: torna in coda
     assert utenti["anna"].get(f"/api/job/{job}").json()["stato"] == "in_coda"
@@ -72,7 +72,9 @@ def test_riavvio_con_job_in_elaborazione_riprende_dal_checkpoint(utenti, worker,
 
     assert worker.motore.ripartenze == [int(35 * 16000)]   # ripartito da 25 s, non da zero
     testo = utenti["anna"].get(f"/api/job/{job}/testo").text
-    assert "prima" in testo and "seconda" in testo and "non confermata" not in testo
+    assert "prima" in testo and "seconda" in testo and "numero 0 lunghezza" in testo
+    with pool.connection() as c:                   # i segmenti di lavoro spariscono a job concluso
+        assert c.execute("SELECT count(*) AS n FROM job_segmenti").fetchone()["n"] == 0
 
 
 def test_annullato_durante_elaborazione(utenti, worker, pool, cfg, monkeypatch):
@@ -89,7 +91,10 @@ def test_annullato_durante_elaborazione(utenti, worker, pool, cfg, monkeypatch):
     worker.esegui_uno()
     assert utenti["anna"].get(f"/api/job/{job}").json()["stato"] == "annullato"
     f = file_job(cfg, job)
-    assert not f["testo"].exists() and not f["parziale"].exists() and not f["wav"].exists()
+    assert not f["wav"].exists()
+    with pool.connection() as c:
+        riga = c.execute("SELECT testo, (SELECT count(*) FROM job_segmenti) AS n FROM job").fetchone()
+    assert riga["testo"] is None and riga["n"] == 0
 
 
 def test_log_senza_testo_trascritto(utenti, worker, caplog):
@@ -110,3 +115,17 @@ def test_audio_non_valido_rifiutato(utenti):
 def test_limite_dimensione(utenti):
     r = utenti["anna"].carica(b"x" * (6 * 2**20))
     assert r.status_code == 413
+
+
+def test_testo_salvato_nel_database(utenti, worker, pool):
+    job = utenti["anna"].carica().json()["id"]
+    worker.avvio()
+    worker.esegui_uno()
+    with pool.connection() as c:
+        riga = c.execute("SELECT testo FROM job WHERE id = %s", (job,)).fetchone()
+    assert "frase segreta numero 5" in riga["testo"]
+    assert utenti["anna"].get(f"/api/job/{job}/testo").text == riga["testo"]
+    # eliminato il job, il testo non esiste più da nessuna parte
+    assert utenti["anna"].delete(f"/api/job/{job}").status_code == 200
+    with pool.connection() as c:
+        assert c.execute("SELECT count(*) AS n FROM job").fetchone()["n"] == 0

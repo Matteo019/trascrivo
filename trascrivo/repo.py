@@ -15,7 +15,8 @@ STATI_ATTIVI = ("in_coda", "in_elaborazione")
 PRIORITA_ADMIN = 10
 PRIORITA_UTENTE = 0
 
-# metadati di un job: mai il testo né il nome del file originale (che non si salva proprio)
+# metadati di un job: mai il testo (colonna job.testo, letta solo da job_con_testo per il proprietario)
+# né il nome del file originale (che non si salva proprio)
 _CAMPI_JOB = ("j.id, j.proprietario_id, j.progetto_id, p.nome AS progetto, j.stato, j.priorita, j.lingua, "
               "j.modello, j.durata_s, j.avanzamento_s, j.errore, j.creato_il, j.iniziato_il, j.finito_il, "
               "j.testo_scade_il")
@@ -156,7 +157,8 @@ def job_con_testo(pool: ConnectionPool, utente: dict, job_id) -> dict | None:
     if uid is None:
         return None
     with pool.connection() as c:
-        return c.execute("SELECT id FROM job WHERE id = %s AND proprietario_id = %s AND stato = 'completato'",
+        return c.execute("SELECT id, testo FROM job WHERE id = %s AND proprietario_id = %s AND stato = 'completato' "
+                         "AND testo IS NOT NULL",
                          (uid, utente["id"])).fetchone()
 
 
@@ -165,11 +167,14 @@ def annulla_job(pool: ConnectionPool, utente: dict, job_id) -> dict | None:
     uid = _uuid(job_id)
     if uid is None:
         return None
-    with pool.connection() as c:
-        return c.execute("UPDATE job SET stato = 'annullato', finito_il = now() "
+    with pool.connection() as c, c.transaction():
+        riga = c.execute("UPDATE job SET stato = 'annullato', finito_il = now() "
                          "WHERE id = %s AND stato IN ('in_coda', 'in_elaborazione') "
                          "AND (proprietario_id = %s OR %s) RETURNING id",
                          (uid, utente["id"], _admin(utente))).fetchone()
+        if riga:
+            c.execute("DELETE FROM job_segmenti WHERE job_id = %s", (uid,))
+        return riga
 
 
 def elimina_job(pool: ConnectionPool, utente: dict, job_id) -> dict | None:
@@ -203,11 +208,25 @@ def prendi_prossimo(pool: ConnectionPool) -> dict | None:
             "(SELECT glossario FROM progetti WHERE id = j.progetto_id) AS glossario").fetchone()
 
 
-def aggiorna_avanzamento(pool: ConnectionPool, job_id: UUID, secondi: float) -> bool:
-    """Salva il punto raggiunto; False se nel frattempo il job è stato annullato o eliminato."""
+def segmenti_salvati(pool: ConnectionPool, job_id: UUID) -> list[tuple[float, float, str]]:
+    """Segmenti confermati di un job ripreso dopo un'interruzione, in ordine."""
     with pool.connection() as c:
-        return c.execute("UPDATE job SET avanzamento_s = %s WHERE id = %s AND stato = 'in_elaborazione'",
-                         (secondi, job_id)).rowcount == 1
+        righe = c.execute("SELECT inizio, fine, testo FROM job_segmenti WHERE job_id = %s ORDER BY inizio",
+                          (job_id,)).fetchall()
+    return [(r["inizio"], r["fine"], r["testo"]) for r in righe]
+
+
+def salva_checkpoint(pool: ConnectionPool, job_id: UUID, nuovi: list[tuple[float, float, str]],
+                     secondi: float) -> bool:
+    """Segmenti nuovi e punto raggiunto, insieme. False se il job è stato annullato o eliminato."""
+    with pool.connection() as c, c.transaction():
+        if c.execute("UPDATE job SET avanzamento_s = %s WHERE id = %s AND stato = 'in_elaborazione'",
+                     (secondi, job_id)).rowcount != 1:
+            return False
+        with c.cursor() as cur:
+            cur.executemany("INSERT INTO job_segmenti (job_id, inizio, fine, testo) VALUES (%s, %s, %s, %s) "
+                            "ON CONFLICT DO NOTHING", [(job_id, a, b, t) for a, b, t in nuovi])
+    return True
 
 
 def imposta_durata(pool: ConnectionPool, job_id: UUID, durata_s: float):
@@ -215,12 +234,20 @@ def imposta_durata(pool: ConnectionPool, job_id: UUID, durata_s: float):
         c.execute("UPDATE job SET durata_s = %s WHERE id = %s", (durata_s, job_id))
 
 
-def completa(pool: ConnectionPool, job_id: UUID, giorni_conservazione: int) -> bool:
+def completa(pool: ConnectionPool, job_id: UUID, testo: str, giorni_conservazione: int) -> bool:
+    """Salva il testo finale e toglie i segmenti di lavoro. False se il job è stato annullato nel frattempo."""
     scade = dt.datetime.now(dt.UTC) + dt.timedelta(days=giorni_conservazione)
+    with pool.connection() as c, c.transaction():
+        c.execute("DELETE FROM job_segmenti WHERE job_id = %s", (job_id,))
+        return c.execute("UPDATE job SET stato = 'completato', finito_il = now(), testo = %s, "
+                         "avanzamento_s = coalesce(durata_s, avanzamento_s), testo_scade_il = %s "
+                         "WHERE id = %s AND stato = 'in_elaborazione'", (testo, scade, job_id)).rowcount == 1
+
+
+def scarta_segmenti(pool: ConnectionPool, job_id: UUID):
+    """Job concluso senza testo (errore, annullato): i segmenti parziali non servono più."""
     with pool.connection() as c:
-        return c.execute("UPDATE job SET stato = 'completato', finito_il = now(), avanzamento_s = coalesce(durata_s, "
-                         "avanzamento_s), testo_scade_il = %s WHERE id = %s AND stato = 'in_elaborazione'",
-                         (scade, job_id)).rowcount == 1
+        c.execute("DELETE FROM job_segmenti WHERE job_id = %s", (job_id,))
 
 
 def fallisci(pool: ConnectionPool, job_id: UUID, errore: str):

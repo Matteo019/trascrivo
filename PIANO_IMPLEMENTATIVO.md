@@ -71,7 +71,9 @@ Browser ──HTTPS──> Cloudflare Tunnel ──> [web]  FastAPI (uvicorn, 1 
 - `job`: id (UUID, non indovinabile), proprietario_id, progetto_id, stato (`in_coda`, `in_elaborazione`, `completato`, `errore`, `annullato`), priorita, lingua, modello, durata_audio_s, avanzamento_s, errore (messaggio breve, mai contenuti), creato_il, iniziato_il, finito_il, testo_scade_il
 - `tentativi_login`: per il rate limiting (ip/email, istante) — persistente anche dopo un riavvio
 
-Il testo **non** sta nel database: file `data/testi/<job_id>.txt`. Nel database solo metadati.
+- `job.testo` e `job_segmenti` (migrazione 002, richiesta del 26/11/2026): **tutti i dati stanno in PostgreSQL**,
+  compreso il testo trascritto e i segmenti del checkpoint. Su disco resta solo l'audio, e solo finché il job
+  non è concluso. Un solo backup (`pg_dump`), nessun file orfano.
 
 ## 5. Ottimizzazioni (CPU, 8 GB, nessuna GPU)
 
@@ -118,7 +120,7 @@ Ogni fase: commit piccoli in italiano, poi resoconto e istruzioni per provarla.
 
 ### Fase 3 — Privacy e conservazione
 - Audio cancellato a fine job (completato, errore definitivo o annullato).
-- Testo cancellato dopo `CONSERVAZIONE_GIORNI` (default 7) e subito con un pulsante; pulizia oraria di file e righe, più controllo dei file orfani.
+- Testo cancellato dopo `CONSERVAZIONE_GIORNI` (default 7) e subito con un pulsante; pulizia oraria delle righe nel database e dei file audio orfani.
 - Log solo con ID: niente testo, niente nomi di file originali, niente email nei log del worker.
 - Nessuna telemetria: `HF_HUB_DISABLE_TELEMETRY=1`; il modello si scarica una volta nel volume, poi `HF_HUB_OFFLINE=1`.
 - Avviso esatto vicino al download + avviso sugli errori della trascrizione automatica.

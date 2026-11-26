@@ -25,15 +25,13 @@ def file_job(cfg: Config, job_id) -> dict[str, Path]:
     return {
         "originale": cfg.cartella_audio / f"{job_id}.in",
         "wav": cfg.cartella_lavoro / f"{job_id}.wav",
-        "parziale": cfg.cartella_lavoro / f"{job_id}.tsv",
-        "testo": cfg.cartella_testi / f"{job_id}.txt",
     }
 
 
 def elimina_audio(cfg: Config, job_id):
-    """Audio originale, audio convertito e file di lavoro: si cancellano appena il job è concluso."""
+    """Audio originale e audio convertito: si cancellano appena il job è concluso."""
     f = file_job(cfg, job_id)
-    for chiave in ("originale", "wav", "parziale"):
+    for chiave in ("originale", "wav"):
         try:
             f[chiave].unlink(missing_ok=True)
         except OSError:      # file ancora aperto dal worker (solo Windows): lo cancella il worker alla fine
@@ -68,16 +66,12 @@ class Worker:
             dati = self._leggi(f["wav"])
             repo.imposta_durata(self.pool, jid, len(dati) / audio.FREQUENZA)
             segmenti = pipeline.trascrivi(
-                self.motore, dati, job["lingua"], job["glossario"] or "", f["parziale"],
-                da_secondi=job["avanzamento_s"],
-                salva_punto=lambda s: repo.aggiorna_avanzamento(self.pool, jid, s))
-            temporaneo = f["testo"].with_suffix(".tmp")
-            temporaneo.write_text(pipeline.formatta(segmenti), encoding="utf-8")
-            temporaneo.replace(f["testo"])
-            if repo.completa(self.pool, jid, self.cfg.giorni_conservazione):
+                self.motore, dati, job["lingua"], job["glossario"] or "",
+                gia_fatti=repo.segmenti_salvati(self.pool, jid), da_secondi=job["avanzamento_s"],
+                salva=lambda nuovi, punto: repo.salva_checkpoint(self.pool, jid, nuovi, punto))
+            if repo.completa(self.pool, jid, pipeline.formatta(segmenti), self.cfg.giorni_conservazione):
                 log.info("job %s: completato", jid)
             else:                                           # annullato proprio alla fine
-                f["testo"].unlink(missing_ok=True)
                 log.info("job %s: annullato", jid)
         except pipeline.Annullato:
             log.info("job %s: annullato durante l'elaborazione", jid)
@@ -91,6 +85,8 @@ class Worker:
             # concluso in qualsiasi modo: l'audio non resta sul disco. Se il processo muore qui
             # dentro (riavvio), il finally non gira e il job riprende dal checkpoint.
             elimina_audio(self.cfg, jid)
+            if repo.stato_job(self.pool, jid) != "in_elaborazione":
+                repo.scarta_segmenti(self.pool, jid)        # concluso: i segmenti di lavoro non servono più
         return True
 
     def ciclo(self):

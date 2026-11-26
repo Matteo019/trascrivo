@@ -71,15 +71,11 @@ class Config:
         return self.cartella_dati / "audio"
 
     @property
-    def cartella_testi(self) -> Path:
-        return self.cartella_dati / "testi"
-
-    @property
     def cartella_lavoro(self) -> Path:
         return self.cartella_dati / "lavoro"
 
     def crea_cartelle(self):
-        for c in (self.cartella_audio, self.cartella_testi, self.cartella_lavoro):
+        for c in (self.cartella_audio, self.cartella_lavoro):
             c.mkdir(parents=True, exist_ok=True)
 
 
