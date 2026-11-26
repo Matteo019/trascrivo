@@ -67,8 +67,13 @@ class WhisperLocale:
         if self._modello is None:
             from faster_whisper import WhisperModel
             inizio = time.monotonic()
-            self._modello = WhisperModel(self.nome_modello, device="cpu", compute_type="int8",
-                                         cpu_threads=self.thread)
+            parametri = {"device": "cpu", "compute_type": "int8", "cpu_threads": self.thread}
+            try:
+                # di norma il modello è già nel volume: nessuna connessione a Hugging Face
+                self._modello = WhisperModel(self.nome_modello, local_files_only=True, **parametri)
+            except Exception:  # noqa: BLE001 — primo avvio o modello cambiato: si scarica una volta sola
+                log.info("modello %s non presente: lo scarico (una volta sola)", self.nome_modello)
+                self._modello = WhisperModel(self.nome_modello, **parametri)
             log.info("modello %s caricato in %.1f s", self.nome_modello, time.monotonic() - inizio)
         return self._modello
 

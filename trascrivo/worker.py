@@ -8,6 +8,7 @@ import logging
 import os
 import signal
 import threading
+import time
 from pathlib import Path
 from uuid import UUID
 
@@ -38,18 +39,39 @@ def elimina_audio(cfg: Config, job_id):
             pass
 
 
+PULIZIA_OGNI_S = 3600
+ORFANI_DOPO_S = 3600       # un file senza job attivo più vecchio di così è un avanzo (upload interrotto, crash)
+
+
 class Worker:
     def __init__(self, pool: ConnectionPool, cfg: Config, motore: pipeline.Motore,
                  converti=audio.converti, leggi=audio.leggi_wav):
         self.pool, self.cfg, self.motore = pool, cfg, motore
         self._converti, self._leggi = converti, leggi
         self.fermati = threading.Event()
+        self._ultima_pulizia = 0.0
 
     def avvio(self):
         self.cfg.crea_cartelle()
         n = repo.rimetti_in_coda_interrotti(self.pool)
         if n:
             log.info("%d job interrotti rimessi in coda", n)
+        self.pulisci()
+
+    def pulisci(self):
+        """Conservazione: righe scadute nel database e file audio rimasti senza un job attivo."""
+        self._ultima_pulizia = time.monotonic()
+        conti = repo.pulizia(self.pool, self.cfg.giorni_conservazione)
+        attivi = repo.job_attivi(self.pool)
+        limite = time.time() - ORFANI_DOPO_S
+        orfani = 0
+        for cartella in (self.cfg.cartella_audio, self.cfg.cartella_lavoro):
+            for f in cartella.iterdir():
+                if f.is_file() and f.name.split(".", 1)[0] not in attivi and f.stat().st_mtime < limite:
+                    f.unlink(missing_ok=True)
+                    orfani += 1
+        if orfani or any(conti.values()):
+            log.info("pulizia: %s, file orfani %d", ", ".join(f"{k} {v}" for k, v in conti.items()), orfani)
 
     def esegui_uno(self) -> bool:
         """Elabora il prossimo job, se c'è. True se ne ha preso uno."""
@@ -95,6 +117,8 @@ class Worker:
         with psycopg.connect(self.cfg.database_url, autocommit=True) as ascolto:
             ascolto.execute(f"LISTEN {CANALE_CODA}")
             while not self.fermati.is_set():
+                if time.monotonic() - self._ultima_pulizia >= PULIZIA_OGNI_S:
+                    self.pulisci()
                 if self.esegui_uno():
                     continue
                 for _ in ascolto.notifies(timeout=5, stop_after=1):

@@ -364,3 +364,33 @@ def imposta_priorita(pool: ConnectionPool, job_id, priorita: int) -> dict | None
     with pool.connection() as c:
         return c.execute("UPDATE job SET priorita = %s WHERE id = %s AND stato = 'in_coda' RETURNING id",
                          (priorita, uid)).fetchone()
+
+
+# --- conservazione ----------------------------------------------------------
+
+def pulizia(pool: ConnectionPool, giorni_conservazione: int) -> dict:
+    """
+    Cancella quello che non serve più: job completati col testo scaduto (riga e testo), job in errore o
+    annullati più vecchi della conservazione, sessioni e inviti scaduti, tentativi di accesso vecchi.
+    """
+    with pool.connection() as c, c.transaction():
+        conti = {
+            "job_scaduti": c.execute("DELETE FROM job WHERE stato = 'completato' AND testo_scade_il < now()"
+                                     ).rowcount,
+            "job_chiusi": c.execute("DELETE FROM job WHERE stato IN ('errore', 'annullato') "
+                                    "AND finito_il < now() - make_interval(days => %s)",
+                                    (giorni_conservazione,)).rowcount,
+            "sessioni": c.execute("DELETE FROM sessioni WHERE scade_il < now()").rowcount,
+            "inviti": c.execute("DELETE FROM inviti WHERE scade_il < now() "
+                                "OR usato_il < now() - interval '1 day'").rowcount,
+            "tentativi": c.execute("DELETE FROM tentativi_accesso WHERE istante < now() - interval '1 day'"
+                                   ).rowcount,
+        }
+    return conti
+
+
+def job_attivi(pool: ConnectionPool) -> set[str]:
+    """ID dei job ancora in coda o in elaborazione: i loro file audio non si toccano."""
+    with pool.connection() as c:
+        return {str(r["id"]) for r in c.execute(
+            "SELECT id FROM job WHERE stato IN ('in_coda', 'in_elaborazione')").fetchall()}

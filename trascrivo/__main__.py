@@ -17,7 +17,10 @@ from . import config, db, repo, sicurezza
 def _log():
     logging.basicConfig(level=os.environ.get("LOG_LIVELLO", "INFO"),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    # i log di accesso di uvicorn contengono i percorsi (con gli ID dei job): ok, niente contenuti
+    # librerie chiacchierone: richieste HTTP del download del modello, dettagli interni di Whisper
+    for nome in ("httpx", "httpx2", "huggingface_hub", "faster_whisper", "urllib3"):
+        logging.getLogger(nome).setLevel(logging.WARNING)
+    # i log di accesso di uvicorn sono spenti (log_level warning): niente percorsi né IP nei log
 
 
 def main(argv: list[str]) -> int:
