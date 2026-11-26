@@ -1,6 +1,7 @@
 # Piano implementativo — trascrivo (servizio web)
 
-> Stato: **bozza da approvare**. Nessuna modifica al codice finché non arriva l'ok.
+> Stato (26/11/2026): **Fasi 1–4 implementate**. Restano a mano: route su Cloudflare, `COOKIE_SICURO=1`,
+> benchmark sul server, revisione delle bozze legali, nuova grafica. Dettaglio nella tabella «Stato» del README.
 > Repository `trascrivo`, copia separata di `trascrizione` (l'app desktop non si tocca).
 > Dominio: `trascrizioni.matteobertotti.tech`.
 
