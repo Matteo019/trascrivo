@@ -1,0 +1,11 @@
+.env
+.venv/
+trascrizioni/
+progetti/
+__pycache__/
+*.pyc
+*.log
+.env.tmp
+cestino/
+ai.json
+ai.tmp
