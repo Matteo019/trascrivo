@@ -49,7 +49,7 @@ def url_db(url_server):
 def pool(url_db):
     p = db.crea_pool(url_db, 4)
     with p.connection() as c:
-        c.execute("TRUNCATE utenti, sessioni, progetti, job RESTART IDENTITY CASCADE")
+        c.execute("TRUNCATE utenti, sessioni, progetti, job, inviti, tentativi_accesso RESTART IDENTITY CASCADE")
     yield p
     p.close()
 
