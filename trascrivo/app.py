@@ -1,6 +1,7 @@
 """API e pagine del servizio. `crea_app` riceve configurazione e pool: i test ne passano di propri."""
 
 import datetime as dt
+import ipaddress
 import logging
 import uuid
 from pathlib import Path
@@ -21,6 +22,13 @@ log = logging.getLogger(__name__)
 CARTELLA_WEB = Path(__file__).resolve().parent.parent / "web"
 METODI_SICURI = {"GET", "HEAD", "OPTIONS"}
 NON_TROVATO = "Non trovato."
+# rate limiting dei tentativi falliti (accesso e cambio password)
+FINESTRA_MINUTI = 15
+MAX_PER_EMAIL = 5
+MAX_PER_IP = 20
+# niente script, stili o risorse esterne né inline: tutto dal servizio stesso
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
+       "media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 
 
 def crea_app(cfg: Config, pool: ConnectionPool) -> FastAPI:
@@ -50,19 +58,55 @@ def crea_app(cfg: Config, pool: ConnectionPool) -> FastAPI:
                 "max_minuti": utente["max_minuti"] or cfg.max_minuti,
                 "max_job_giorno": utente["max_job_giorno"] or cfg.max_job_giorno}
 
+    def ip_cliente(request: Request) -> str:
+        """Dietro il tunnel l'IP vero è in CF-Connecting-IP; lo si accetta solo se arriva da una rete privata
+        (il container cloudflared), mai da un client che si inventa l'intestazione."""
+        diretto = request.client.host if request.client else ""
+        da_cf = request.headers.get("cf-connecting-ip")
+        if cfg.ip_da_cloudflare and da_cf:
+            try:
+                privato = ipaddress.ip_address(diretto).is_private
+            except ValueError:
+                privato = False
+            if privato:
+                return da_cf.strip()[:64]
+        return diretto
+
+    def controlla_tentativi(request: Request, email: str) -> tuple[str, str]:
+        chiave_ip = "ip:" + sicurezza.impronta(ip_cliente(request))
+        chiave_email = "email:" + sicurezza.impronta(email.strip().lower())
+        if (repo.tentativi_recenti(pool, chiave_email, FINESTRA_MINUTI) >= MAX_PER_EMAIL
+                or repo.tentativi_recenti(pool, chiave_ip, FINESTRA_MINUTI) >= MAX_PER_IP):
+            raise HTTPException(429, f"Troppi tentativi: riprova tra {FINESTRA_MINUTI} minuti.")
+        return chiave_ip, chiave_email
+
+    def apri_sessione(response: Response, utente_id: int):
+        token, csrf = sicurezza.nuovo_token(), sicurezza.nuovo_token()
+        repo.crea_sessione(pool, sicurezza.impronta(token), utente_id, csrf, cfg.durata_sessione_ore)
+        response.set_cookie(nome_cookie, token, max_age=cfg.durata_sessione_ore * 3600, path="/",
+                            secure=cfg.cookie_sicuro, httponly=True, samesite="strict")
+
+    def password_valida(password: str) -> str:
+        if len(password) < sicurezza.PASSWORD_MIN:
+            raise HTTPException(400, f"La password deve avere almeno {sicurezza.PASSWORD_MIN} caratteri.")
+        if len(password) > 256:
+            raise HTTPException(400, "Password troppo lunga.")
+        return password
+
     @app.post("/api/accesso", dependencies=[Depends(stessa_origine)])
-    def accesso(response: Response, dati: dict = Body(...)):
-        email, password = str(dati.get("email", "")), str(dati.get("password", ""))
+    def accesso(request: Request, response: Response, dati: dict = Body(...)):
+        email, password = str(dati.get("email", ""))[:320], str(dati.get("password", ""))[:256]
+        chiave_ip, chiave_email = controlla_tentativi(request, email)
         utente = repo.utente_per_email(pool, email) if email else None
         valida = sicurezza.verifica_password(utente["hash_password"] if utente else None, password)
         if not (utente and valida and utente["attivo"]):
+            repo.registra_tentativo(pool, chiave_ip, chiave_email)
+            log.warning("accesso non riuscito")         # niente email né IP nei log
             raise HTTPException(401, "Email o password non corrette.")
+        repo.azzera_tentativi(pool, chiave_email)
         if sicurezza.da_aggiornare(utente["hash_password"]):
             repo.aggiorna_hash(pool, utente["id"], sicurezza.hash_password(password))
-        token, csrf = sicurezza.nuovo_token(), sicurezza.nuovo_token()
-        repo.crea_sessione(pool, sicurezza.impronta(token), utente["id"], csrf, cfg.durata_sessione_ore)
-        response.set_cookie(nome_cookie, token, max_age=cfg.durata_sessione_ore * 3600, path="/",
-                            secure=cfg.cookie_sicuro, httponly=True, samesite="strict")
+        apri_sessione(response, utente["id"])
         return {"ok": True}
 
     @app.post("/api/uscita", dependencies=[Depends(stessa_origine)])
@@ -71,6 +115,34 @@ def crea_app(cfg: Config, pool: ConnectionPool) -> FastAPI:
         if token:
             repo.elimina_sessione(pool, sicurezza.impronta(token))
         response.delete_cookie(nome_cookie, path="/", secure=cfg.cookie_sicuro, httponly=True, samesite="strict")
+        return {"ok": True}
+
+    @app.post("/api/password")
+    def cambia_password(request: Request, dati: dict = Body(...), utente: dict = Depends(utente_corrente)):
+        chiave_ip, chiave_email = controlla_tentativi(request, utente["email"])
+        completo = repo.utente_per_email(pool, utente["email"])
+        if not sicurezza.verifica_password(completo["hash_password"], str(dati.get("attuale", ""))[:256]):
+            repo.registra_tentativo(pool, chiave_ip, chiave_email)
+            raise HTTPException(400, "La password attuale non è corretta.")
+        repo.aggiorna_hash(pool, utente["id"], sicurezza.hash_password(password_valida(str(dati.get("nuova", "")))))
+        return {"ok": True}
+
+    @app.get("/api/invito/{token}")
+    def leggi_invito(token: str):
+        invito = repo.invito_valido(pool, sicurezza.impronta(token))
+        if invito is None:
+            raise HTTPException(404, "Invito non valido, già usato o scaduto.")
+        return {"email": invito["email"]}
+
+    @app.post("/api/invito/{token}", dependencies=[Depends(stessa_origine)])
+    def accetta_invito(token: str, response: Response, dati: dict = Body(...)):
+        nome = str(dati.get("nome", "")).strip()[:100]
+        hash_pw = sicurezza.hash_password(password_valida(str(dati.get("password", ""))))
+        utente = repo.usa_invito(pool, sicurezza.impronta(token), nome, hash_pw)
+        if utente is None:
+            raise HTTPException(404, "Invito non valido, già usato o scaduto.")
+        log.info("invito accettato: utente %s", utente["id"])
+        apri_sessione(response, utente["id"])
         return {"ok": True}
 
     @app.get("/api/io")
@@ -196,6 +268,79 @@ def crea_app(cfg: Config, pool: ConnectionPool) -> FastAPI:
                         headers={"Content-Disposition": f'attachment; filename="{nome}"',
                                  "Cache-Control": "no-store"})
 
+    # --- amministrazione --------------------------------------------------
+
+    def admin_corrente(utente: dict = Depends(utente_corrente)) -> dict:
+        if utente["ruolo"] != "admin":
+            raise HTTPException(403, "Riservato all'amministratore.")
+        return utente
+
+    def limite_opzionale(dati: dict, campo: str) -> int | None:
+        valore = dati.get(campo)
+        if valore in (None, ""):
+            return None
+        try:
+            numero = int(valore)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{campo} deve essere un numero.") from None
+        if not 1 <= numero <= 100_000:
+            raise HTTPException(400, f"{campo} fuori dai limiti.")
+        return numero
+
+    @app.get("/api/admin/utenti")
+    def admin_utenti(_admin: dict = Depends(admin_corrente)):
+        return repo.elenco_utenti(pool)
+
+    @app.put("/api/admin/utenti/{utente_id}")
+    def admin_aggiorna_utente(utente_id: int, dati: dict = Body(...), admin: dict = Depends(admin_corrente)):
+        riga = repo.aggiorna_utente(pool, admin, utente_id, bool(dati.get("attivo", True)),
+                                    limite_opzionale(dati, "max_mb"), limite_opzionale(dati, "max_minuti"),
+                                    limite_opzionale(dati, "max_job_giorno"))
+        if riga is None:
+            raise HTTPException(400 if utente_id == admin["id"] else 404,
+                                "Non puoi disattivare il tuo account." if utente_id == admin["id"] else NON_TROVATO)
+        log.info("utente %s aggiornato dall'admin", utente_id)
+        return {"ok": True}
+
+    @app.get("/api/admin/inviti")
+    def admin_inviti(_admin: dict = Depends(admin_corrente)):
+        return repo.inviti_in_attesa(pool)
+
+    @app.post("/api/admin/inviti", status_code=201)
+    def admin_crea_invito(dati: dict = Body(...), admin: dict = Depends(admin_corrente)):
+        email = str(dati.get("email", "")).strip()[:320]
+        ruolo = str(dati.get("ruolo", "user"))
+        if "@" not in email or ruolo not in ("user", "admin"):
+            raise HTTPException(400, "Email o ruolo non validi.")
+        if repo.utente_per_email(pool, email):
+            raise HTTPException(409, "Esiste già un utente con questa email.")
+        token = sicurezza.nuovo_token()
+        invito = repo.crea_invito(pool, admin, sicurezza.impronta(token), email, ruolo, cfg.giorni_invito)
+        # il link lo compone la pagina (dopo il #, così il token non finisce nei log del server)
+        return {**invito, "token": token}
+
+    @app.delete("/api/admin/inviti/{prefisso}")
+    def admin_revoca_invito(prefisso: str, _admin: dict = Depends(admin_corrente)):
+        if not repo.revoca_invito(pool, prefisso):
+            raise HTTPException(404, NON_TROVATO)
+        return {"ok": True}
+
+    @app.get("/api/admin/coda")
+    def admin_coda(_admin: dict = Depends(admin_corrente)):
+        return repo.coda_admin(pool)
+
+    @app.put("/api/admin/job/{job_id}/priorita")
+    def admin_priorita(job_id: str, dati: dict = Body(...), _admin: dict = Depends(admin_corrente)):
+        try:
+            priorita = int(dati.get("priorita"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Priorità non valida.") from None
+        if not -100 <= priorita <= 100:
+            raise HTTPException(400, "La priorità va da -100 a 100.")
+        if repo.imposta_priorita(pool, job_id, priorita) is None:
+            raise HTTPException(404, "Job non trovato o non più in coda.")
+        return {"ok": True}
+
     # --- varie --------------------------------------------------------------
 
     @app.get("/salute", include_in_schema=False)
@@ -207,9 +352,18 @@ def crea_app(cfg: Config, pool: ConnectionPool) -> FastAPI:
     @app.middleware("http")
     async def intestazioni(request: Request, call_next):
         risposta = await call_next(request)
+        h = risposta.headers
         if request.url.path.startswith("/api/"):
-            risposta.headers["Cache-Control"] = "no-store"
-        risposta.headers["X-Content-Type-Options"] = "nosniff"
+            h["Cache-Control"] = "no-store"
+        h["Content-Security-Policy"] = CSP
+        h["X-Content-Type-Options"] = "nosniff"
+        h["X-Frame-Options"] = "DENY"
+        h["Referrer-Policy"] = "no-referrer"
+        h["Permissions-Policy"] = "microphone=(self), camera=(), geolocation=(), payment=(), usb=()"
+        h["Cross-Origin-Opener-Policy"] = "same-origin"
+        h["Cross-Origin-Resource-Policy"] = "same-origin"
+        if cfg.cookie_sicuro:
+            h["Strict-Transport-Security"] = "max-age=31536000"
         return risposta
 
     @app.exception_handler(HTTPException)

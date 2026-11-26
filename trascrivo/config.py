@@ -65,6 +65,8 @@ class Config:
     # web
     cookie_sicuro: bool
     durata_sessione_ore: int
+    ip_da_cloudflare: bool = False
+    giorni_invito: int = 7
 
     @property
     def cartella_audio(self) -> Path:
@@ -96,4 +98,6 @@ def carica() -> Config:
         giorni_conservazione=_intero("CONSERVAZIONE_GIORNI", 7, minimo=1),
         cookie_sicuro=_booleano("COOKIE_SICURO", True),
         durata_sessione_ore=_intero("SESSIONE_ORE", 24 * 7, minimo=1),
+        ip_da_cloudflare=_booleano("IP_DA_CLOUDFLARE", True),
+        giorni_invito=_intero("INVITO_GIORNI", 7, minimo=1),
     )

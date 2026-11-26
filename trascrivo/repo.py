@@ -260,3 +260,107 @@ def stato_job(pool: ConnectionPool, job_id: UUID) -> str | None:
     with pool.connection() as c:
         riga = c.execute("SELECT stato FROM job WHERE id = %s", (job_id,)).fetchone()
     return riga["stato"] if riga else None
+
+
+# --- rate limiting dell'accesso ---------------------------------------------
+
+def tentativi_recenti(pool: ConnectionPool, chiave: str, minuti: int) -> int:
+    with pool.connection() as c:
+        return c.execute("SELECT count(*) AS n FROM tentativi_accesso WHERE chiave = %s "
+                         "AND istante > now() - make_interval(mins => %s)", (chiave, minuti)).fetchone()["n"]
+
+
+def registra_tentativo(pool: ConnectionPool, *chiavi: str):
+    with pool.connection() as c, c.transaction():
+        c.execute("DELETE FROM tentativi_accesso WHERE istante < now() - interval '1 day'")
+        with c.cursor() as cur:
+            cur.executemany("INSERT INTO tentativi_accesso (chiave) VALUES (%s)", [(k,) for k in chiavi])
+
+
+def azzera_tentativi(pool: ConnectionPool, chiave: str):
+    with pool.connection() as c:
+        c.execute("DELETE FROM tentativi_accesso WHERE chiave = %s", (chiave,))
+
+
+# --- inviti -----------------------------------------------------------------
+
+def crea_invito(pool: ConnectionPool, admin: dict, id_hash: str, email: str, ruolo: str, giorni: int) -> dict:
+    with pool.connection() as c:
+        return c.execute("INSERT INTO inviti (id, email, ruolo, creato_da, scade_il) "
+                         "VALUES (%s, lower(%s), %s, %s, now() + make_interval(days => %s)) "
+                         "RETURNING email, ruolo, scade_il", (id_hash, email.strip(), ruolo, admin["id"], giorni)
+                         ).fetchone()
+
+
+def invito_valido(pool: ConnectionPool, id_hash: str) -> dict | None:
+    with pool.connection() as c:
+        return c.execute("SELECT email, ruolo, scade_il FROM inviti WHERE id = %s AND usato_il IS NULL "
+                         "AND scade_il > now()", (id_hash,)).fetchone()
+
+
+def usa_invito(pool: ConnectionPool, id_hash: str, nome: str, hash_password: str) -> dict | None:
+    """Crea l'utente e consuma l'invito, tutto o niente. None se l'invito non vale o l'email esiste già."""
+    with pool.connection() as c, c.transaction():
+        invito = c.execute("SELECT email, ruolo FROM inviti WHERE id = %s AND usato_il IS NULL "
+                           "AND scade_il > now() FOR UPDATE", (id_hash,)).fetchone()
+        if invito is None or c.execute("SELECT 1 FROM utenti WHERE email = %s", (invito["email"],)).fetchone():
+            return None
+        c.execute("UPDATE inviti SET usato_il = now() WHERE id = %s", (id_hash,))
+        return c.execute("INSERT INTO utenti (email, nome, hash_password, ruolo) VALUES (%s, %s, %s, %s) "
+                         "RETURNING id, email", (invito["email"], nome, hash_password, invito["ruolo"])).fetchone()
+
+
+def inviti_in_attesa(pool: ConnectionPool) -> list[dict]:
+    with pool.connection() as c:
+        return c.execute("SELECT left(id, 12) AS id, email, ruolo, creato_il, scade_il FROM inviti "
+                         "WHERE usato_il IS NULL AND scade_il > now() ORDER BY creato_il DESC").fetchall()
+
+
+def revoca_invito(pool: ConnectionPool, prefisso: str) -> bool:
+    with pool.connection() as c:
+        return c.execute("DELETE FROM inviti WHERE left(id, 12) = %s AND usato_il IS NULL",
+                         (prefisso,)).rowcount == 1
+
+
+# --- amministrazione: utenti e coda -----------------------------------------
+
+def elenco_utenti(pool: ConnectionPool) -> list[dict]:
+    with pool.connection() as c:
+        return c.execute(
+            "SELECT u.id, u.email, u.nome, u.ruolo, u.attivo, u.max_mb, u.max_minuti, u.max_job_giorno, u.creato_il, "
+            "(SELECT count(*) FROM job j WHERE j.proprietario_id = u.id AND j.creato_il > now() - interval '1 day')"
+            " AS job_oggi FROM utenti u ORDER BY u.creato_il").fetchall()
+
+
+def aggiorna_utente(pool: ConnectionPool, admin: dict, utente_id: int, attivo: bool,
+                    max_mb: int | None, max_minuti: int | None, max_job_giorno: int | None) -> dict | None:
+    """Disattiva o riattiva e imposta i limiti. Un admin non può disattivare sé stesso."""
+    if utente_id == admin["id"] and not attivo:
+        return None
+    with pool.connection() as c, c.transaction():
+        riga = c.execute("UPDATE utenti SET attivo = %s, max_mb = %s, max_minuti = %s, max_job_giorno = %s "
+                         "WHERE id = %s RETURNING id", (attivo, max_mb, max_minuti, max_job_giorno, utente_id)
+                         ).fetchone()
+        if riga and not attivo:      # disattivato: fuori subito da tutte le sessioni
+            c.execute("DELETE FROM sessioni WHERE utente_id = %s", (utente_id,))
+        return riga
+
+
+def coda_admin(pool: ConnectionPool) -> list[dict]:
+    """Job attivi e delle ultime 24 ore di tutti gli utenti: solo metadati, mai il testo."""
+    with pool.connection() as c:
+        return c.execute(
+            f"SELECT {_CAMPI_JOB}, u.email AS proprietario FROM job j JOIN utenti u ON u.id = j.proprietario_id "
+            "LEFT JOIN progetti p ON p.id = j.progetto_id "
+            "WHERE j.stato IN ('in_coda', 'in_elaborazione') OR j.creato_il > now() - interval '1 day' "
+            "ORDER BY (j.stato = 'in_elaborazione') DESC, (j.stato = 'in_coda') DESC, "
+            "j.priorita DESC, j.creato_il LIMIT 300").fetchall()
+
+
+def imposta_priorita(pool: ConnectionPool, job_id, priorita: int) -> dict | None:
+    uid = _uuid(job_id)
+    if uid is None:
+        return None
+    with pool.connection() as c:
+        return c.execute("UPDATE job SET priorita = %s WHERE id = %s AND stato = 'in_coda' RETURNING id",
+                         (priorita, uid)).fetchone()
