@@ -1,6 +1,8 @@
 # Stack di trascrivo: web, worker, database.
-# Nessuna porta pubblicata sull'host: da internet si arriva solo dal Cloudflare Tunnel
-# (collegamento alla rete del tunnel: Fase 4).
+# Nessuna porta pubblicata sull'host. Da internet si arriva solo dal Cloudflare Tunnel:
+# il container cloudflared viene collegato alla rete «trascrivo_pubblica», dove c'è solo il servizio web
+# (strumenti/collega_tunnel.sh, lanciato anche dal deploy). Database e worker restano sulla rete interna.
+# Il file .env si sceglie con ENV_FILE (il deploy usa ~/trascrivo/.env); senza, quello accanto a questo file.
 
 # nome fisso: lo stesso stack (e gli stessi volumi) da qualsiasi cartella, anche dal runner GitHub
 name: trascrivo
@@ -11,7 +13,7 @@ services:
     image: trascrivo:latest
     container_name: trascrivo-web
     restart: unless-stopped
-    env_file: .env
+    env_file: ${ENV_FILE:-.env}
     environment:
       DATABASE_URL: postgresql://trascrivo:${POSTGRES_PASSWORD:?imposta POSTGRES_PASSWORD in .env}@db:5432/trascrivo
     volumes:
@@ -20,14 +22,14 @@ services:
       db:
         condition: service_healthy
     mem_limit: 512m
-    networks: [interna]
+    networks: [interna, pubblica]
 
   worker:
     image: trascrivo:latest
     container_name: trascrivo-worker
     command: ["python", "-m", "trascrivo", "worker"]
     restart: unless-stopped
-    env_file: .env
+    env_file: ${ENV_FILE:-.env}
     environment:
       DATABASE_URL: postgresql://trascrivo:${POSTGRES_PASSWORD}@db:5432/trascrivo
     volumes:
@@ -71,3 +73,5 @@ volumes:
 
 networks:
   interna:
+  pubblica:
+    name: trascrivo_pubblica
