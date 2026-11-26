@@ -1,0 +1,70 @@
+# Stack di trascrivo: web, worker, database.
+# Nessuna porta pubblicata sull'host: da internet si arriva solo dal Cloudflare Tunnel
+# (collegamento alla rete del tunnel: Fase 4).
+
+services:
+  web:
+    build: .
+    image: trascrivo:latest
+    container_name: trascrivo-web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://trascrivo:${POSTGRES_PASSWORD:?imposta POSTGRES_PASSWORD in .env}@db:5432/trascrivo
+    volumes:
+      - dati:/data
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 512m
+    networks: [interna]
+
+  worker:
+    image: trascrivo:latest
+    container_name: trascrivo-worker
+    command: ["python", "-m", "trascrivo", "worker"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://trascrivo:${POSTGRES_PASSWORD}@db:5432/trascrivo
+    volumes:
+      - dati:/data
+      - modelli:/modelli
+    depends_on:
+      db:
+        condition: service_healthy
+      web:
+        condition: service_started
+    healthcheck:
+      disable: true
+    # Whisper medium int8 sta in ~2-3 GB; i limiti tengono liberi CPU e RAM per gli altri servizi
+    mem_limit: ${WORKER_RAM:-4g}
+    cpus: ${WORKER_CPU:-3}
+    stop_grace_period: 10s
+    networks: [interna]
+
+  db:
+    image: postgres:17-alpine
+    container_name: trascrivo-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trascrivo
+      POSTGRES_DB: trascrivo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trascrivo -d trascrivo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 256m
+    networks: [interna]
+
+volumes:
+  dati:
+  modelli:
+  pgdata:
+
+networks:
+  interna:
