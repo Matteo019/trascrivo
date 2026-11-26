@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Trascrizioni</title>
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="testata">
+  <span class="marchio" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2"/></svg></span>
+  <span class="nome">trascrizioni</span>
+  <span class="spazio"></span>
+  <span id="chi" class="tenue"></span>
+  <button id="esci" class="btn fantasma" hidden>Esci</button>
+</header>
+
+<main>
+  <!-- accesso -->
+  <section id="vista-accesso" class="pannello stretto" hidden>
+    <h1>Accedi</h1>
+    <p class="tenue">Il servizio è accessibile solo su invito.</p>
+    <form id="form-accesso">
+      <label>Email <input type="email" name="email" autocomplete="username" required></label>
+      <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
+      <button class="btn primario" type="submit">Accedi</button>
+      <p class="errore" id="errore-accesso" role="alert"></p>
+    </form>
+  </section>
+
+  <!-- applicazione -->
+  <div id="vista-app" hidden>
+    <section class="pannello">
+      <h1>Nuova trascrizione</h1>
+      <div class="griglia">
+        <label>Progetto
+          <select id="progetto"><option value="">Nessun progetto</option></select>
+        </label>
+        <label>Lingua
+          <select id="lingua">
+            <option value="it">Italiano</option>
+            <option value="en">Inglese</option>
+            <option value="auto">Automatica</option>
+          </select>
+        </label>
+      </div>
+      <div class="azioni">
+        <label class="btn primario">Carica un file audio
+          <input type="file" id="file" accept=".opus,.ogg,.mp3,.wav,.m4a,.webm,audio/*" hidden>
+        </label>
+        <button id="registra" class="btn">● Registra dal microfono</button>
+        <span id="stato-registrazione" class="tenue" aria-live="polite"></span>
+      </div>
+      <p class="tenue piccolo" id="limiti"></p>
+      <div id="avanzamento-upload" class="barra" hidden><div></div></div>
+      <p class="errore" id="errore-upload" role="alert"></p>
+    </section>
+
+    <section class="pannello">
+      <div class="riga-titolo">
+        <h2>Le tue trascrizioni</h2>
+        <button id="gestisci-progetti" class="btn fantasma">Progetti e glossari</button>
+      </div>
+      <p class="avviso">
+        Se incolli questa trascrizione in un servizio AI esterno, i dati escono dal controllo di questo servizio.
+        Non condividere dati sensibili e ricorda che le persone registrate (docenti, colleghi) dovrebbero essere
+        informate. L'uso è a tuo carico.
+      </p>
+      <p class="tenue piccolo">La trascrizione automatica può contenere errori: rileggila prima di usarla.
+        L'audio viene cancellato appena la trascrizione è finita; il testo resta disponibile per
+        <span id="giorni"></span> giorni.</p>
+      <ul id="job" class="elenco"></ul>
+      <p id="nessun-job" class="tenue" hidden>Nessuna trascrizione per ora.</p>
+    </section>
+  </div>
+</main>
+
+<dialog id="dialogo-progetti">
+  <form method="dialog" class="pannello">
+    <h2>Progetti e glossari</h2>
+    <p class="tenue piccolo">Il glossario contiene i termini che Whisper deve scrivere giusti
+      (uno per riga o separati da virgola). Ne usa al massimo ~500 caratteri.</p>
+    <ul id="elenco-progetti" class="elenco"></ul>
+    <h3>Nuovo progetto</h3>
+    <label>Nome <input id="nuovo-nome" maxlength="100"></label>
+    <label>Glossario <textarea id="nuovo-glossario" rows="3"></textarea></label>
+    <div class="azioni">
+      <button id="crea-progetto" class="btn primario" type="button">Crea</button>
+      <button class="btn fantasma" value="chiudi">Chiudi</button>
+    </div>
+  </form>
+</dialog>
+</body>
+</html>
