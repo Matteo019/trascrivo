@@ -1,11 +1,34 @@
+# segreti e configurazione locale
 .env
+.env.*
+!.env.example
+
+# dati: audio, trascrizioni, database, backup
+data/
+*.db
+*.sqlite*
+*.sql.gz
+*.dump
+*.wav
+*.mp3
+*.m4a
+*.ogg
+*.opus
+*.webm
+*.txt
+!requirements*.txt
+
+# Python
 .venv/
-trascrizioni/
-progetti/
 __pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
 *.log
-.env.tmp
+
+# dati locali della vecchia app desktop (mai su git)
+progetti/
 cestino/
+trascrizioni/
 ai.json
 ai.tmp

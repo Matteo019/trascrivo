@@ -1,5 +1,5 @@
 """
-Benchmark Whisper locale (faster-whisper, int8 su CPU) per decidere se affiancare Groq.
+Benchmark Whisper locale (faster-whisper, int8 su CPU) per scegliere il modello del server.
 
 Per ogni modello misura su spezzoni da 10 s e 30 s di un WAV reale:
   - tempo di caricamento del modello
@@ -93,7 +93,7 @@ def main():
     ap.add_argument("--modelli", nargs="+", default=MODELLI)
     ap.add_argument("--ripetizioni", type=int, default=2)
     ap.add_argument("--thread", type=int, default=max(1, (psutil.cpu_count(logical=False) or 2) - 1),
-                    help="thread CPU (default: core fisici - 1, per lasciare spazio alla chiamata)")
+                    help="thread CPU (default: core fisici - 1)")
     ap.add_argument("--prompt", default="", help="es. termini del glossario")
     args = ap.parse_args()
 
