@@ -170,3 +170,9 @@ sessione); Whisper finto nei test, così non serve caricare modelli.
 - nessuna chiamata a servizi esterni per trascrizione o riassunto, né nel codice né nelle dipendenze;
 - `grep` nei log non trova testo trascritto;
 - il benchmark gira sul server e riporta tempi e RAM per `small` e `medium`.
+
+## 12. Promemoria
+
+- [ ] **Rifare la grafica della pagina principale** (richiesto da Matteo il 26/11/2026 dopo la prima prova sul server):
+  oggi funziona ma è essenziale. Da decidere insieme cosa migliorare (layout, intestazione, elenco dei job,
+  area di caricamento) prima di toccarla.
