@@ -20,6 +20,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }   /* vince anche su .btn e simili */
 body { margin: 0; background: var(--mint); color: var(--ink-900); font: 16px/1.5 var(--font); }
 main { max-width: 860px; margin: 0 auto; padding: 16px; }
 h1, h2, h3 { margin: 0 0 12px; line-height: 1.2; }
@@ -80,3 +81,8 @@ dialog { border: none; padding: 0; background: transparent; width: min(640px, ca
 dialog::backdrop { background: rgba(22,31,25,.45); }
 dialog .pannello { margin: 0; max-height: 85vh; overflow: auto; }
 .elenco textarea { margin-top: 4px; }
+
+.numero { width: 6.5em; }
+.limiti { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+label.compatto { font-size: .8rem; font-weight: 600; margin: 0; }
+code { font-family: ui-monospace, Consolas, monospace; font-size: .85rem; overflow-wrap: anywhere; }

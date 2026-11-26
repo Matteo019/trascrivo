@@ -43,17 +43,20 @@ const data = (iso) => new Date(iso).toLocaleString("it-IT", { dateStyle: "short"
 function mostraAccesso() {
   io = null;
   clearTimeout(timerAggiorna);
-  $("vista-app").hidden = true;
-  $("vista-accesso").hidden = false;
-  $("esci").hidden = true;
-  $("chi").textContent = "";
+  mostra("vista-accesso");
+  $("esci").hidden = $("chi").hidden = $("apri-admin").hidden = true;
+}
+
+// una sola vista alla volta
+function mostra(id) {
+  for (const v of ["vista-accesso", "vista-invito", "vista-app", "vista-admin"]) $(v).hidden = v !== id;
 }
 
 async function avvia() {
   try { io = await api("GET", "/api/io"); } catch { return; }
-  $("vista-accesso").hidden = true;
-  $("vista-app").hidden = false;
-  $("esci").hidden = false;
+  mostra("vista-app");
+  $("esci").hidden = $("chi").hidden = false;
+  $("apri-admin").hidden = io.ruolo !== "admin";
   $("chi").textContent = io.nome || io.email;
   $("lingua").value = io.lingua_predefinita;
   $("giorni").textContent = io.conservazione_giorni;
@@ -264,4 +267,128 @@ $("crea-progetto").addEventListener("click", async () => {
   } catch (e) { alert(e.message); }
 });
 
-avvia().then(() => { if (!io) mostraAccesso(); });
+// --- account ---------------------------------------------------------------
+
+$("chi").addEventListener("click", () => { $("errore-password").textContent = ""; $("dialogo-account").showModal(); });
+$("chiudi-account").addEventListener("click", () => $("dialogo-account").close());
+$("form-password").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  try {
+    await api("POST", "/api/password", { attuale: f.get("attuale"), nuova: f.get("nuova") });
+    ev.target.reset();
+    $("dialogo-account").close();
+    alert("Password cambiata.");
+  } catch (e) { $("errore-password").textContent = e.message; }
+});
+
+// --- invito ----------------------------------------------------------------
+
+async function mostraInvito(token) {
+  mostra("vista-invito");
+  try {
+    $("invito-email").textContent = (await api("GET", `/api/invito/${encodeURIComponent(token)}`)).email;
+  } catch (e) {
+    $("form-invito").hidden = true;
+    $("vista-invito").append(el("p", { class: "errore" }, e.message));
+    return;
+  }
+  $("form-invito").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    if (f.get("password") !== f.get("ripeti")) { $("errore-invito").textContent = "Le password non coincidono."; return; }
+    try {
+      await api("POST", `/api/invito/${encodeURIComponent(token)}`, { nome: f.get("nome"), password: f.get("password") });
+      history.replaceState(null, "", "/");      // il token non resta nella barra degli indirizzi
+      await avvia();
+    } catch (e) { $("errore-invito").textContent = e.message; }
+  });
+}
+
+// --- amministrazione (solo metadati: mai il testo delle trascrizioni) ----------
+
+$("apri-admin").addEventListener("click", () => { mostra("vista-admin"); aggiornaAdmin(); });
+$("chiudi-admin").addEventListener("click", () => { mostra("vista-app"); aggiornaJob(); });
+
+async function aggiornaAdmin() {
+  if ($("vista-admin").hidden || !io) return;
+  try {
+    const [coda, inviti, utenti] = await Promise.all(
+      [api("GET", "/api/admin/coda"), api("GET", "/api/admin/inviti"), api("GET", "/api/admin/utenti")]);
+    $("admin-coda").replaceChildren(...(coda.length ? coda.map(rigaCodaAdmin) : [el("li", { class: "tenue" }, "Nessun job.")]));
+    $("admin-inviti").replaceChildren(...inviti.map((i) => el("li", {},
+      el("div", { class: "info" }, el("div", { class: "titolo" }, i.email),
+        el("div", { class: "tenue piccolo" }, `invito in attesa · ${i.ruolo} · scade il ${data(i.scade_il)}`)),
+      el("button", { class: "btn pericolo piccolo", onclick: () => adminAzione("DELETE", `/api/admin/inviti/${i.id}`, undefined, "Revocare l'invito?") }, "Revoca"))));
+    $("admin-utenti").replaceChildren(...utenti.map(rigaUtenteAdmin));
+  } catch (e) { console.error(e); }
+}
+
+function rigaCodaAdmin(j) {
+  const perc = j.durata_s ? Math.min(100, Math.round((100 * j.avanzamento_s) / j.durata_s)) : 0;
+  const azioni = el("div", { class: "azioni" });
+  if (j.stato === "in_coda") {
+    const p = el("input", { type: "number", min: "-100", max: "100", value: String(j.priorita), class: "numero", "aria-label": "Priorità" });
+    azioni.append(p, el("button", { class: "btn piccolo", onclick: () => adminAzione("PUT", `/api/admin/job/${j.id}/priorita`, { priorita: Number(p.value) }) }, "Imposta"));
+  }
+  if (j.stato === "in_coda" || j.stato === "in_elaborazione") {
+    azioni.append(el("button", { class: "btn pericolo piccolo", onclick: () => adminAzione("POST", `/api/job/${j.id}/annulla`, undefined, `Annullare il job di ${j.proprietario}?`) }, "Annulla"));
+  }
+  let dettaglio = `${data(j.creato_il)} · ${minuti(j.durata_s)} · priorità ${j.priorita}`;
+  if (j.stato === "in_elaborazione") dettaglio += ` · ${perc}%`;
+  if (j.errore) dettaglio += ` · ${j.errore}`;
+  return el("li", {}, el("div", { class: "info" },
+    el("div", { class: "titolo" }, j.proprietario, " ", el("span", { class: `etichetta ${j.stato}` }, STATI[j.stato])),
+    el("div", { class: "tenue piccolo" }, dettaglio)), azioni);
+}
+
+function rigaUtenteAdmin(u) {
+  const campi = [["max_mb", "MB per file"], ["max_minuti", "Minuti per file"], ["max_job_giorno", "File al giorno"]]
+    .map(([nome, etichetta]) => {
+      const i = el("input", { type: "number", min: "1", class: "numero", placeholder: "predef." });
+      if (u[nome] != null) i.value = u[nome];
+      return { nome, etichetta, input: i };
+    });
+  const salva = (attivo) => adminAzione("PUT", `/api/admin/utenti/${u.id}`,
+    { attivo, ...Object.fromEntries(campi.map((c) => [c.nome, c.input.value])) },
+    attivo === u.attivo ? undefined : attivo ? `Riattivare ${u.email}?` : `Disattivare ${u.email}? Viene scollegato subito.`);
+  return el("li", {},
+    el("div", { class: "info" },
+      el("div", { class: "titolo" }, u.email, " ", el("span", { class: "etichetta" }, u.ruolo), " ",
+        u.attivo ? null : el("span", { class: "etichetta errore" }, "disattivato")),
+      el("div", { class: "tenue piccolo" }, `${u.nome || "—"} · ${u.job_oggi} file nelle ultime 24 ore`),
+      el("div", { class: "limiti" }, ...campi.map((c) => el("label", { class: "compatto" }, c.etichetta, c.input)))),
+    el("div", { class: "azioni" },
+      el("button", { class: "btn piccolo", onclick: () => salva(u.attivo) }, "Salva limiti"),
+      el("button", { class: `btn piccolo ${u.attivo ? "pericolo" : ""}`, onclick: () => salva(!u.attivo) }, u.attivo ? "Disattiva" : "Riattiva")));
+}
+
+async function adminAzione(metodo, percorso, corpo, domanda) {
+  if (domanda && !confirm(domanda)) return;
+  try { await api(metodo, percorso, corpo); } catch (e) { alert(e.message); }
+  aggiornaAdmin();
+}
+
+$("form-nuovo-invito").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  try {
+    const invito = await api("POST", "/api/admin/inviti", { email: f.get("email"), ruolo: f.get("ruolo") });
+    const link = `${location.origin}/#invito=${invito.token}`;
+    const box = $("link-invito");
+    box.replaceChildren(`Link per ${invito.email}, valido fino al ${data(invito.scade_il)} e usabile una volta sola. `,
+      "Mandalo tu alla persona: il servizio non invia email.", el("br"), el("code", {}, link), " ",
+      el("button", { class: "btn piccolo", type: "button", onclick: () => navigator.clipboard?.writeText(link) }, "Copia"));
+    box.hidden = false;
+    ev.target.reset();
+    aggiornaAdmin();
+  } catch (e) { alert(e.message); }
+});
+
+setInterval(aggiornaAdmin, 5000);
+
+// --- avvio -------------------------------------------------------------------
+
+const tokenInvito = new URLSearchParams(location.hash.slice(1)).get("invito");
+if (tokenInvito) mostraInvito(tokenInvito);
+else avvia().then(() => { if (!io) mostraAccesso(); });

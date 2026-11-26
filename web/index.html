@@ -13,7 +13,8 @@
   <span class="marchio" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2"/></svg></span>
   <span class="nome">trascrizioni</span>
   <span class="spazio"></span>
-  <span id="chi" class="tenue"></span>
+  <button id="apri-admin" class="btn fantasma" hidden>Amministrazione</button>
+  <button id="chi" class="btn fantasma" hidden title="Account"></button>
   <button id="esci" class="btn fantasma" hidden>Esci</button>
 </header>
 
@@ -29,6 +30,48 @@
       <p class="errore" id="errore-accesso" role="alert"></p>
     </form>
   </section>
+
+  <!-- accettazione di un invito (link con #invito=...) -->
+  <section id="vista-invito" class="pannello stretto" hidden>
+    <h1>Crea il tuo account</h1>
+    <p class="tenue">Invito per <b id="invito-email"></b>.</p>
+    <form id="form-invito">
+      <label>Nome <input name="nome" autocomplete="name" maxlength="100"></label>
+      <label>Password (almeno 10 caratteri)
+        <input type="password" name="password" autocomplete="new-password" minlength="10" required></label>
+      <label>Ripeti la password
+        <input type="password" name="ripeti" autocomplete="new-password" minlength="10" required></label>
+      <button class="btn primario" type="submit">Crea account</button>
+      <p class="errore" id="errore-invito" role="alert"></p>
+    </form>
+  </section>
+
+  <!-- pannello admin: solo metadati, mai il testo delle trascrizioni -->
+  <div id="vista-admin" hidden>
+    <section class="pannello">
+      <div class="riga-titolo"><h1>Amministrazione</h1>
+        <button id="chiudi-admin" class="btn fantasma">← Le mie trascrizioni</button></div>
+      <h2>Coda</h2>
+      <p class="tenue piccolo">Job attivi e delle ultime 24 ore di tutti gli utenti. Priorità più alta = prima;
+        i tuoi job partono a 10, quelli degli utenti a 0.</p>
+      <ul id="admin-coda" class="elenco"></ul>
+    </section>
+    <section class="pannello">
+      <h2>Invita un utente</h2>
+      <form id="form-nuovo-invito" class="griglia">
+        <label>Email <input type="email" name="email" required></label>
+        <label>Ruolo <select name="ruolo"><option value="user">Utente</option><option value="admin">Amministratore</option></select></label>
+        <div class="azioni"><button class="btn primario" type="submit">Crea link di invito</button></div>
+      </form>
+      <p id="link-invito" class="avviso" hidden></p>
+      <ul id="admin-inviti" class="elenco"></ul>
+    </section>
+    <section class="pannello">
+      <h2>Utenti</h2>
+      <p class="tenue piccolo">Limiti vuoti = valori predefiniti del server.</p>
+      <ul id="admin-utenti" class="elenco"></ul>
+    </section>
+  </div>
 
   <!-- applicazione -->
   <div id="vista-app" hidden>
@@ -76,6 +119,20 @@
     </section>
   </div>
 </main>
+
+<dialog id="dialogo-account">
+  <form method="dialog" class="pannello" id="form-password">
+    <h2>Cambia password</h2>
+    <label>Password attuale <input type="password" name="attuale" autocomplete="current-password" required></label>
+    <label>Nuova password (almeno 10 caratteri)
+      <input type="password" name="nuova" autocomplete="new-password" minlength="10" required></label>
+    <p class="errore" id="errore-password" role="alert"></p>
+    <div class="azioni">
+      <button class="btn primario" type="submit" value="salva">Salva</button>
+      <button class="btn fantasma" type="button" id="chiudi-account">Chiudi</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="dialogo-progetti">
   <form method="dialog" class="pannello">
