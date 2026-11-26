@@ -2,6 +2,9 @@
 # Nessuna porta pubblicata sull'host: da internet si arriva solo dal Cloudflare Tunnel
 # (collegamento alla rete del tunnel: Fase 4).
 
+# nome fisso: lo stesso stack (e gli stessi volumi) da qualsiasi cartella, anche dal runner GitHub
+name: trascrivo
+
 services:
   web:
     build: .
